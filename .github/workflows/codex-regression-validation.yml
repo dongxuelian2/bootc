@@ -12,17 +12,27 @@ jobs:
       CARGO_INCREMENTAL: '0'
       CARGO_TERM_COLOR: never
       RUST_BACKTRACE: '1'
+      CARGO_PROFILE_DEV_DEBUG: '0'
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: bootc-dev/actions/bootc-ubuntu-setup@main
+      - name: Install native build dependencies
+        run: sudo apt-get install -y libglib2.0-dev libostree-dev libssl-dev libsystemd-dev libzstd-dev libselinux1-dev libclang-dev libfuse3-dev pkg-config
       - name: Set up Rust and record environment
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
           mkdir reports
-          { uname -a; cat /etc/os-release; rustc -Vv; cargo -V; systemd-analyze --version; git rev-parse HEAD; just --list; } | tee reports/environment.log
+          { uname -a; cat /etc/os-release; rustc -Vv; cargo -V; systemd-analyze --version; git rev-parse HEAD; printf 'RUSTFLAGS=%s\n' "${RUSTFLAGS-}"; pkg-config --modversion glib-2.0 ostree-1 libsystemd libzstd libselinux; just --list; } | tee reports/environment.log
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: bootc-native-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-v1
       - name: Reproduce both failures with upstream production code
         run: |
           python3 - <<'PY'
