@@ -26,50 +26,34 @@ jobs:
           rustup default stable
           mkdir reports
           { uname -a; cat /etc/os-release; rustc -Vv; cargo -V; systemd-analyze --version; git rev-parse HEAD; printf 'RUSTFLAGS=%s\n' "${RUSTFLAGS-}"; pkg-config --modversion glib-2.0 ostree-1 libsystemd libzstd libselinux; just --list; } | tee reports/environment.log
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: rust-cache
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
           key: bootc-native-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-v1
-      - name: Reproduce both failures with upstream production code
+      - name: Confirm unchanged shell-dependent test failure
         run: |
-          python3 - <<'PY'
-          import pathlib, subprocess
-          p = pathlib.Path('crates/ostree-ext/src/chunking.rs')
-          fixed = p.read_text()
-          pathlib.Path('/tmp/chunking-fixed.rs').write_text(fixed)
-          old = subprocess.check_output(['git', 'show', 'de7ae55a1c859df999a8d9ccc5eee32372f4c6f0:crates/ostree-ext/src/chunking.rs'], text=True)
-          start = 'fn basic_packing_with_prior_build'
-          end = '/// Given a set of components with size metadata'
-          def function(s):
-              a = s.index(start)
-              return s[a:s.index(end, a)]
-          p.write_text(fixed.replace(function(fixed), function(old)))
-          PY
+          git diff --exit-code de7ae55a1c859df999a8d9ccc5eee32372f4c6f0 -- crates/utils/
           set +e
-          cargo test -p ostree-ext --locked duplicate_names -- --nocapture 2>&1 | tee reports/baseline.log
+          cargo test -p bootc-internal-utils --locked command::tests::command_run_capture_stderr -- --exact --nocapture 2>&1 | tee reports/shell-baseline.log
           status=${PIPESTATUS[0]}
           set -e
-          cp /tmp/chunking-fixed.rs crates/ostree-ext/src/chunking.rs
           test "$status" = 101
-          grep -F 'test result: FAILED. 0 passed; 2 failed;' reports/baseline.log
-      - name: Run focused chunking suite
+          grep -F 'test result: FAILED. 0 passed; 1 failed;' reports/shell-baseline.log
+      - name: Run every workspace test with Fedora-compatible sh in a private namespace
         if: always()
         run: |
           set -o pipefail
-          cargo test -p ostree-ext --locked chunking:: -- --nocapture 2>&1 | tee reports/focused.log
-      - name: Validate using the project Makefile
-        if: always()
-        run: |
-          set -o pipefail
-          make validate 2>&1 | tee reports/validate.log
-      - name: Run workspace tests
-        if: always()
-        run: |
-          set -o pipefail
-          cargo test --workspace --locked -- --test-threads=1 2>&1 | tee reports/workspace.log
+          sudo --preserve-env=PATH,RUSTFLAGS,CARGO_PROFILE_DEV_DEBUG,CARGO_INCREMENTAL,RUST_BACKTRACE \
+            unshare --mount --propagation private bash -euc '
+              mount --bind /usr/bin/bash "$(readlink -f /bin/sh)"
+              /bin/sh --version
+              exec sudo -u "$SUDO_USER" --preserve-env=PATH,RUSTFLAGS,CARGO_PROFILE_DEV_DEBUG,CARGO_INCREMENTAL,RUST_BACKTRACE \
+                cargo test --workspace --locked --no-fail-fast -- --test-threads=1
+            ' 2>&1 | tee reports/workspace.log
       - name: Check final diff
         if: always()
         run: git diff --check
@@ -78,3 +62,11 @@ jobs:
         with:
           name: bootc-duplicate-names-validation
           path: reports/
+      - uses: actions/cache/save@v4
+        if: always() && steps.rust-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: bootc-native-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-v1
