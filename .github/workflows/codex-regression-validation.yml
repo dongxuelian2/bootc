@@ -1,0 +1,70 @@
+name: Focused duplicate-name regression validation
+on:
+  push:
+    branches: [codex/validate-prior-packing-duplicate-names]
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_TERM_COLOR: never
+      RUST_BACKTRACE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: bootc-dev/actions/bootc-ubuntu-setup@main
+      - name: Set up Rust and record environment
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          mkdir reports
+          { uname -a; cat /etc/os-release; rustc -Vv; cargo -V; systemd-analyze --version; git rev-parse HEAD; just --list; } | tee reports/environment.log
+      - name: Reproduce both failures with upstream production code
+        run: |
+          python3 - <<'PY'
+          import pathlib, subprocess
+          p = pathlib.Path('crates/ostree-ext/src/chunking.rs')
+          fixed = p.read_text()
+          pathlib.Path('/tmp/chunking-fixed.rs').write_text(fixed)
+          old = subprocess.check_output(['git', 'show', 'de7ae55a1c859df999a8d9ccc5eee32372f4c6f0:crates/ostree-ext/src/chunking.rs'], text=True)
+          start = 'fn basic_packing_with_prior_build'
+          end = '/// Given a set of components with size metadata'
+          def function(s):
+              a = s.index(start)
+              return s[a:s.index(end, a)]
+          p.write_text(fixed.replace(function(fixed), function(old)))
+          PY
+          set +e
+          cargo test -p ostree-ext --locked duplicate_names -- --nocapture 2>&1 | tee reports/baseline.log
+          status=${PIPESTATUS[0]}
+          set -e
+          cp /tmp/chunking-fixed.rs crates/ostree-ext/src/chunking.rs
+          test "$status" = 101
+          grep -F 'test result: FAILED. 0 passed; 2 failed;' reports/baseline.log
+      - name: Run focused chunking suite
+        if: always()
+        run: |
+          set -o pipefail
+          cargo test -p ostree-ext --locked chunking:: -- --nocapture 2>&1 | tee reports/focused.log
+      - name: Validate using the project Makefile
+        if: always()
+        run: |
+          set -o pipefail
+          make validate 2>&1 | tee reports/validate.log
+      - name: Run workspace tests
+        if: always()
+        run: |
+          set -o pipefail
+          cargo test --workspace --locked -- --test-threads=1 2>&1 | tee reports/workspace.log
+      - name: Check final diff
+        if: always()
+        run: git diff --check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bootc-duplicate-names-validation
+          path: reports/
