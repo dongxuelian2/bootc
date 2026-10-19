@@ -47,13 +47,14 @@ jobs:
         if: always()
         run: |
           set -o pipefail
+          runner_cargo=$(command -v cargo)
           sudo --preserve-env=PATH,RUSTFLAGS,CARGO_PROFILE_DEV_DEBUG,CARGO_INCREMENTAL,RUST_BACKTRACE \
             unshare --mount --propagation private bash -euc '
               mount --bind /usr/bin/bash "$(readlink -f /bin/sh)"
               /bin/sh --version
               exec sudo -u "$SUDO_USER" --preserve-env=PATH,RUSTFLAGS,CARGO_PROFILE_DEV_DEBUG,CARGO_INCREMENTAL,RUST_BACKTRACE \
-                cargo test --workspace --locked --no-fail-fast -- --test-threads=1
-            ' 2>&1 | tee reports/workspace.log
+                env "PATH=$2" "$1" test --workspace --locked --no-fail-fast -- --test-threads=1
+            ' bash "$runner_cargo" "$PATH" 2>&1 | tee reports/workspace.log
       - name: Check final diff
         if: always()
         run: git diff --check
