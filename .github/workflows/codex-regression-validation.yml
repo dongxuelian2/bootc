@@ -37,6 +37,32 @@ jobs:
             target
           key: bootc-native-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-v2
           restore-keys: bootc-native-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-v1
+      - name: Reproduce the discarded prior layout with the old production function
+        run: |
+          python3 - <<'PY'
+          import pathlib, subprocess
+          p = pathlib.Path('crates/ostree-ext/src/chunking.rs')
+          fixed = p.read_text()
+          old = subprocess.check_output(['git', 'show', 'fcf896317661495dc7fb50b9df803a3276437601:crates/ostree-ext/src/chunking.rs'], text=True)
+          start = 'fn basic_packing_with_prior_build'
+          end = '/// Given a set of components with size metadata'
+          def function(s):
+              a = s.index(start)
+              return s[a:s.index(end, a)]
+          try:
+              p.write_text(fixed.replace(function(fixed), function(old)))
+              result = subprocess.run(['cargo', 'test', '-p', 'ostree-ext', '--locked', 'test_prior_packing_duplicate_names', '--', '--nocapture'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+              pathlib.Path('reports/baseline.log').write_text(result.stdout)
+              print(result.stdout)
+              assert result.returncode == 101 and 'duplicate names should preserve the reusable prior layout' in result.stdout
+          finally:
+              p.write_text(fixed)
+          PY
+      - name: Run focused chunking tests and project validation
+        run: |
+          set -o pipefail
+          cargo test -p ostree-ext --locked chunking:: -- --nocapture 2>&1 | tee reports/focused.log
+          make validate 2>&1 | tee reports/validate.log
       - name: Run every workspace test with Fedora-compatible sh in a private namespace
         if: always()
         run: |
